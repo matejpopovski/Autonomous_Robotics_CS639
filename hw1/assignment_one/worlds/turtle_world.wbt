@@ -1,0 +1,32 @@
+#VRML_SIM R2023b utf8
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2023b/projects/objects/backgrounds/protos/TexturedBackground.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2023b/projects/objects/backgrounds/protos/TexturedBackgroundLight.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2023b/projects/objects/floors/protos/RectangleArena.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2023b/projects/robots/robotis/turtlebot/protos/TurtleBot3Burger.proto"
+# EXTERNPROTO "/Users/jphanna/teaching/25spring-cs639/turtle_project/protos/MyProto.proto"
+
+WorldInfo {
+}
+Viewpoint {
+  orientation -0.5773 0.5773 0.5773 2.0944
+  position 0 0 10
+}
+TexturedBackground {
+}
+TexturedBackgroundLight {
+}
+RectangleArena {
+  floorSize 3 5
+  wallHeight 1.0
+}
+DEF MY_ROBOT TurtleBot3Burger {
+  name "myRobot"
+  controller "turtle_controller"
+  translation 1.25 0 0
+  rotation 0 0 1 1.57
+}
+Robot {
+  name "supervisor_robot"
+  supervisor TRUE
+  controller "supervisor_controller"  # Assign a supervisor controller
+}
