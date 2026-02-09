@@ -79,125 +79,112 @@ class StudentController:
 
         return x, y, heading
     
-    ## helpers: 
-    def _safe_min(self, arr, ignore_zeros=True):
-        """Min that optionally ignores zeros (since inf gets mapped to 0)."""
-        if ignore_zeros:
-            arr = [v for v in arr if v > 1e-6]
-        return min(arr) if arr else float("inf")
+    # ## helpers: 
+    # def _safe_min(self, arr, ignore_zeros=True):
+    #     """Min that optionally ignores zeros (since inf gets mapped to 0)."""
+    #     if ignore_zeros:
+    #         arr = [v for v in arr if v > 1e-6]
+    #     return min(arr) if arr else float("inf")
 
-    def _get_directional_distances(self, lidar):
-        """
-        Returns approximate distances in key directions in robot frame.
-        Assumes 360-ish lidar where index 0 front, 90 right, 180 back, 270 left.
-        If your lidar length differs, this converts degrees -> index.
-        """
+    # def _get_directional_distances(self, lidar):
+    #     """
+    #     Returns approximate distances in key directions in robot frame.
+    #     Assumes 360-ish lidar where index 0 front, 90 right, 180 back, 270 left.
+    #     If your lidar length differs, this converts degrees -> index.
+    #     """
+    #     n = len(lidar)
+
+    #     def idx(deg):
+    #         return int((deg % 360) * n / 360)
+
+    #     front = lidar[idx(0)]
+    #     right = lidar[idx(90)]
+    #     left  = lidar[idx(270)]
+    #     front_left = lidar[idx(315)]  # 45° to the left of front
+
+    #     closest = self._safe_min(lidar, ignore_zeros=True)
+    #     return front, right, left, closest, front_left
+
+    def _idx(self, deg, n):
+        return int((deg % 360) * n / 360)
+
+    def _dir_dists(self, lidar):
         n = len(lidar)
+        front = lidar[self._idx(0, n)]
+        right = lidar[self._idx(90, n)]
+        left  = lidar[self._idx(270, n)]
+        return front, right, left
+
+
+
+    def step(self, sensors):
+        # Expect only lidar in this HW wrapper
+        lidar_readings = sensors["lidar"]
+        lidar = np.array(lidar_readings, dtype=float)
+
+        # Handle inf -> 0 (common in your setup)
+        filtered = np.copy(lidar)
+        filtered[np.isinf(filtered)] = 0.0
+
+        # Directional distances
+        n = len(filtered)
 
         def idx(deg):
             return int((deg % 360) * n / 360)
 
-        front = lidar[idx(0)]
-        right = lidar[idx(90)]
-        left  = lidar[idx(270)]
-        front_left = lidar[idx(315)]  # 45° to the left of front
+        front = filtered[idx(0)]
+        right = filtered[idx(90)]
+        left  = filtered[idx(270)]
 
-        closest = self._safe_min(lidar, ignore_zeros=True)
-        return front, right, left, closest, front_left
+        # Follow RIGHT wall at DESIRED_DISTANCE
+        error = DESIRED_DISTANCE - right
 
+        control_dict = {"left_motor": 0.0, "right_motor": 0.0}
 
+        # Corner / collision override: if wall in front, turn left
+        if front > 1e-6 and front < TURN_THRESHOLD:
+            control_dict["left_motor"]  = 0.25 * MAX_SPEED
+            control_dict["right_motor"] = 0.85 * MAX_SPEED
+            return control_dict
 
-def step(self, sensors):
-    """
-    Compute robot control as a function of sensors.
+        # Steering command u
+        u = 0.0
 
-    Input:
-    sensors: dict, contains current sensor values.
-
-    Output:
-    control_dict: dict, contains control for "left_motor" and "right_motor"
-    """
-    control_dict = {"left_motor": 0.0, "right_motor": 0.0}
-
-    # Print control law ONCE (prevents console spam)
-    if not hasattr(self, "_printed_control_law"):
-        print("control_law:", self.control_law)
-        self._printed_control_law = True
-
-    # NOTE: This check is effectively dead-code because previous_lidar_data starts as []
-    # but leaving it doesn't hurt.
-    if self.previous_lidar_data is None:
-        num_lidar_rays = len(sensors["lidar"])
-        self.previous_lidar_data = [[] for _ in range(num_lidar_rays)]
-
-    # Read sensors
-    lidar_data = sensors["lidar"]
-
-    # Apply filtering
-    filtered_lidar = self.get_filtered_lidar_reading(lidar_data)
-    heading = self.get_filtered_heading(sensors["heading"])
-
-    # Pose estimate (ok to keep even if not used)
-    x, y, heading = self.compute_pose(heading, filtered_lidar)
-
-    # Directional distances (your helper must return 5 values)
-    front, right, left, closest, front_left = self._get_directional_distances(filtered_lidar)
-
-    # --- Local tuning variables (do NOT replace TURN_THRESHOLD globally) ---
-    corner_threshold = 0.15            # "panic" distance for corners
-    corner_exit_threshold = 0.35       # hysteresis for exiting corner mode
-
-    # Follow LEFT wall (counter-clockwise)
-    wall_dist = left
-    error = wall_dist - DESIRED_DISTANCE
-
-    # Base forward speed and turn command
-    base = 0.5 * MAX_SPEED
-    turn = 0.0
-
-    # Validate readings (0 can mean "inf mapped to 0")
-    front_ok = front > 1e-6
-    fl_ok = front_left > 1e-6
-    left_ok = left > 1e-6
-
-    # Corner detection: use AND to avoid triggering too early
-    approaching_corner = (front_ok and fl_ok and (front < corner_threshold) and (front_left < corner_threshold))
-
-    # Bang-bang logic (for now you’re testing bang-bang behavior even if harness sets "P")
-    if self.control_law in ["bang-bang", "P"]:
-        bang_turn = 0.7  # tune 0.5–1.2
-
-        # Enter corner mode
-        if approaching_corner:
-            self.in_corner_turn = True
-
-        # Corner escape mode (adds hysteresis so it doesn't flip-flop)
-        if getattr(self, "in_corner_turn", False):
-            # For LEFT-wall following, turning RIGHT helps round the corner
-            turn = -1.0
-            base = 0.2 * MAX_SPEED
-
-            # Exit when front opens up again (hysteresis)
-            if front_ok and front > corner_exit_threshold:
-                self.in_corner_turn = False
-        else:
-            # Standard bang-bang wall following (LEFT wall)
-            if error < 0:
-                # too close to left wall -> steer away (turn right)
-                turn = -bang_turn
+        if self.control_law == "bang-bang":
+            deadband = 0.02
+            if error > deadband:
+                u = +0.35 * MAX_SPEED
+            elif error < -deadband:
+                u = -0.35 * MAX_SPEED
             else:
-                # too far from left wall -> steer toward (turn left)
-                turn = +bang_turn
+                u = 0.0
 
-    # Convert (base, turn) -> wheel speeds
-    left_speed = base + turn
-    right_speed = base - turn
+        elif self.control_law == "P":
+            u = KP * error * MAX_SPEED
 
-    # Clamp to motor limits
-    left_speed = max(-MAX_SPEED, min(MAX_SPEED, left_speed))
-    right_speed = max(-MAX_SPEED, min(MAX_SPEED, right_speed))
+        elif self.control_law == "PID":
+            # Safe init in case you didn't add these in __init__
+            if not hasattr(self, "integral_error"):
+                self.integral_error = 0.0
+            if not hasattr(self, "prev_error"):
+                self.prev_error = 0.0
 
-    control_dict["left_motor"] = left_speed
-    control_dict["right_motor"] = right_speed
+            dt = TIME_STEP / 1000.0
+            self.integral_error += error * dt
+            self.integral_error = float(np.clip(self.integral_error, -1.0, 1.0))
+            derr = (error - self.prev_error) / dt
+            self.prev_error = error
 
-    return control_dict
+            u = (KP * error + KI * self.integral_error + KD * derr) * MAX_SPEED
+
+        # Mix into wheel speeds
+        base = 0.6 * MAX_SPEED
+        left_speed  = base - u
+        right_speed = base + u
+
+        left_speed  = float(np.clip(left_speed,  -MAX_SPEED, MAX_SPEED))
+        right_speed = float(np.clip(right_speed, -MAX_SPEED, MAX_SPEED))
+
+        control_dict["left_motor"] = left_speed
+        control_dict["right_motor"] = right_speed
+        return control_dict
