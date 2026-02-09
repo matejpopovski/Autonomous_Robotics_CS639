@@ -17,11 +17,13 @@ ARENA_HEIGHT = 5
 
 
 class StudentController:
-    def __init__(self, control_law="P"):
+    def __init__(self, control_law="bang-bang"):
         self.previous_lidar_data = []
         self.previous_heading_data = []
         self.previous_error = 0
         self.control_law = control_law
+        self.in_corner_turn = False
+
 
     def get_filtered_lidar_reading(self, lidar_data):
         """Get the filtered lidar reading at a specific angle."""
@@ -76,8 +78,38 @@ class StudentController:
             y = bottom_wall_dist - ARENA_HEIGHT / 2
 
         return x, y, heading
+    
+    ## helpers: 
+    def _safe_min(self, arr, ignore_zeros=True):
+        """Min that optionally ignores zeros (since inf gets mapped to 0)."""
+        if ignore_zeros:
+            arr = [v for v in arr if v > 1e-6]
+        return min(arr) if arr else float("inf")
+
+    def _get_directional_distances(self, lidar):
+        """
+        Returns approximate distances in key directions in robot frame.
+        Assumes 360-ish lidar where index 0 front, 90 right, 180 back, 270 left.
+        If your lidar length differs, this converts degrees -> index.
+        """
+        n = len(lidar)
+
+        def idx(deg):
+            return int((deg % 360) * n / 360)
+
+        front = lidar[idx(0)]
+        right = lidar[idx(90)]
+        left  = lidar[idx(270)]
+        front_left = lidar[idx(315)]  # 45° to the left of front
+
+        closest = self._safe_min(lidar, ignore_zeros=True)
+        return front, right, left, closest, front_left
+
+
 
     def step(self, sensors):
+        print("control_law:", self.control_law)
+
         """
         Compute robot control as a function of sensors.
 
@@ -109,7 +141,46 @@ class StudentController:
         x, y, heading = self.compute_pose(heading, filtered_lidar)
 
         # TODO: add your controllers here.
-        control_dict["left_motor"] = 0.5 * MAX_SPEED
-        control_dict["right_motor"] = 0.5 * MAX_SPEED
+        # control_dict["left_motor"] = 0.5 * MAX_SPEED
+        # control_dict["right_motor"] = 0.5 * MAX_SPEED
+
+        front, right, left, closest = self._get_directional_distances(filtered_lidar)
+
+        # Choose which wall to follow (left wall for counter clockwise motion)
+        wall_dist = left
+
+        # Compute error (positive if too far, negative if too close)
+        error = wall_dist - DESIRED_DISTANCE
+
+        # Base forward speed (you can tune later)
+        base = 0.5 * MAX_SPEED
+
+        # ---------- Bang-Bang Controller ----------
+        if self.control_law in ["bang-bang", "P"]:
+
+            bang_turn = 0.6   # starting guess, you can tune later
+
+            if error < 0:
+                # Too close to wall → turn away from wall
+                turn = -bang_turn
+            else:
+                # Too far → turn toward wall
+                turn = +bang_turn
+
+        else:
+            # Default straight drive if not bang-bang yet
+            turn = 0.0
+
+        # Convert (base, turn) -> wheel speeds
+        left_speed  = base + turn
+        right_speed = base - turn
+
+        # Clamp to motor limits
+        left_speed = max(-MAX_SPEED, min(MAX_SPEED, left_speed))
+        right_speed = max(-MAX_SPEED, min(MAX_SPEED, right_speed))
+
+        control_dict["left_motor"] = left_speed
+        control_dict["right_motor"] = right_speed
+
 
         return control_dict
