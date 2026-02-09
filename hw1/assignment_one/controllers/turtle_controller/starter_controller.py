@@ -144,32 +144,49 @@ class StudentController:
         # control_dict["left_motor"] = 0.5 * MAX_SPEED
         # control_dict["right_motor"] = 0.5 * MAX_SPEED
 
-        front, right, left, closest = self._get_directional_distances(filtered_lidar)
+        front, right, left, closest, front_left = self._get_directional_distances(filtered_lidar)
 
-        # Choose which wall to follow (left wall for counter clockwise motion)
+        # Follow LEFT wall (counter-clockwise)
         wall_dist = left
-
-        # Compute error (positive if too far, negative if too close)
         error = wall_dist - DESIRED_DISTANCE
 
-        # Base forward speed (you can tune later)
         base = 0.5 * MAX_SPEED
+        turn = 0.0
 
-        # ---------- Bang-Bang Controller ----------
-        if self.control_law in ["bang-bang", "P"]:
+        if self.control_law == "bang-bang":
+            bang_turn = 0.7  # turning strength (tune 0.5–1.2)
+            
+            # --- CORNER DETECTION / ESCAPE ---
+            # If the front or front-left is too close, we are approaching a corner.
+            # Enter a "corner turning" mode where we rotate right until the path opens.
+            front_is_valid = front > 1e-6
+            fl_is_valid = front_left > 1e-6
 
-            bang_turn = 0.6   # starting guess, you can tune later
+            approaching_corner = (front_is_valid and front < TURN_THRESHOLD) or (fl_is_valid and front_left < TURN_THRESHOLD)
 
-            if error < 0:
-                # Too close to wall → turn away from wall
-                turn = -bang_turn
+            if approaching_corner:
+                self.in_corner_turn = True
+
+            # Exit corner mode when it’s open in front again and left wall distance looks reasonable
+            # (prevents endless spinning)
+            if self.in_corner_turn:
+                # Turn RIGHT in place-ish (for left-wall following, this helps you round the corner)
+                turn = -1.0  # strong turn
+                # Reduce forward speed while turning to avoid wedging
+                base = 0.2 * MAX_SPEED
+
+                # Condition to exit: front is no longer near, and left distance is back in a sane range
+                if (front_is_valid and front > 2 * TURN_THRESHOLD) and (left > 1e-6 and left < 1.5):
+                    self.in_corner_turn = False
             else:
-                # Too far → turn toward wall
-                turn = +bang_turn
+                # --- STANDARD BANG-BANG WALL FOLLOW ---
+                if error < 0:
+                    # too close to left wall → steer away (turn right)
+                    turn = -bang_turn
+                else:
+                    # too far from left wall → steer toward it (turn left)
+                    turn = +bang_turn
 
-        else:
-            # Default straight drive if not bang-bang yet
-            turn = 0.0
 
         # Convert (base, turn) -> wheel speeds
         left_speed  = base + turn
