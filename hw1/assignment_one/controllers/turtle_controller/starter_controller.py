@@ -107,97 +107,97 @@ class StudentController:
 
 
 
-    def step(self, sensors):
+def step(self, sensors):
+    """
+    Compute robot control as a function of sensors.
+
+    Input:
+    sensors: dict, contains current sensor values.
+
+    Output:
+    control_dict: dict, contains control for "left_motor" and "right_motor"
+    """
+    control_dict = {"left_motor": 0.0, "right_motor": 0.0}
+
+    # Print control law ONCE (prevents console spam)
+    if not hasattr(self, "_printed_control_law"):
         print("control_law:", self.control_law)
+        self._printed_control_law = True
 
-        """
-        Compute robot control as a function of sensors.
+    # NOTE: This check is effectively dead-code because previous_lidar_data starts as []
+    # but leaving it doesn't hurt.
+    if self.previous_lidar_data is None:
+        num_lidar_rays = len(sensors["lidar"])
+        self.previous_lidar_data = [[] for _ in range(num_lidar_rays)]
 
-        Input:
-        sensors: dict, contains current sensor values.
+    # Read sensors
+    lidar_data = sensors["lidar"]
 
-        Output:
-        control_dict: dict, contains control for "left_motor" and "right_motor"
-        """
-        control_dict = {"left_motor": 0.0, "right_motor": 0.0}
+    # Apply filtering
+    filtered_lidar = self.get_filtered_lidar_reading(lidar_data)
+    heading = self.get_filtered_heading(sensors["heading"])
 
-        # Initial code for sensing noisy observations and inferring robot pose.
+    # Pose estimate (ok to keep even if not used)
+    x, y, heading = self.compute_pose(heading, filtered_lidar)
 
-        # Initialize data structures for filtering
-        if self.previous_lidar_data is None:
-            num_lidar_rays = len(sensors["lidar"])
-            self.previous_lidar_data = [
-                [] for _ in range(num_lidar_rays)
-            ]  # Stores historical lidar data
+    # Directional distances (your helper must return 5 values)
+    front, right, left, closest, front_left = self._get_directional_distances(filtered_lidar)
 
-        # # Main control loop
-        lidar_data = sensors["lidar"]
+    # --- Local tuning variables (do NOT replace TURN_THRESHOLD globally) ---
+    corner_threshold = 0.15            # "panic" distance for corners
+    corner_exit_threshold = 0.35       # hysteresis for exiting corner mode
 
-        # Apply noise filtering
-        filtered_lidar = self.get_filtered_lidar_reading(lidar_data)
-        heading = self.get_filtered_heading(sensors["heading"])
+    # Follow LEFT wall (counter-clockwise)
+    wall_dist = left
+    error = wall_dist - DESIRED_DISTANCE
 
-        # Get x, y coordinates and heading in radians
-        x, y, heading = self.compute_pose(heading, filtered_lidar)
+    # Base forward speed and turn command
+    base = 0.5 * MAX_SPEED
+    turn = 0.0
 
-        # TODO: add your controllers here.
-        # control_dict["left_motor"] = 0.5 * MAX_SPEED
-        # control_dict["right_motor"] = 0.5 * MAX_SPEED
+    # Validate readings (0 can mean "inf mapped to 0")
+    front_ok = front > 1e-6
+    fl_ok = front_left > 1e-6
+    left_ok = left > 1e-6
 
-        front, right, left, closest, front_left = self._get_directional_distances(filtered_lidar)
+    # Corner detection: use AND to avoid triggering too early
+    approaching_corner = (front_ok and fl_ok and (front < corner_threshold) and (front_left < corner_threshold))
 
-        # Follow LEFT wall (counter-clockwise)
-        wall_dist = left
-        error = wall_dist - DESIRED_DISTANCE
+    # Bang-bang logic (for now you’re testing bang-bang behavior even if harness sets "P")
+    if self.control_law in ["bang-bang", "P"]:
+        bang_turn = 0.7  # tune 0.5–1.2
 
-        base = 0.5 * MAX_SPEED
-        turn = 0.0
+        # Enter corner mode
+        if approaching_corner:
+            self.in_corner_turn = True
 
-        if self.control_law == "bang-bang":
-            bang_turn = 0.7  # turning strength (tune 0.5–1.2)
-            
-            # --- CORNER DETECTION / ESCAPE ---
-            # If the front or front-left is too close, we are approaching a corner.
-            # Enter a "corner turning" mode where we rotate right until the path opens.
-            front_is_valid = front > 1e-6
-            fl_is_valid = front_left > 1e-6
+        # Corner escape mode (adds hysteresis so it doesn't flip-flop)
+        if getattr(self, "in_corner_turn", False):
+            # For LEFT-wall following, turning RIGHT helps round the corner
+            turn = -1.0
+            base = 0.2 * MAX_SPEED
 
-            approaching_corner = (front_is_valid and front < TURN_THRESHOLD) or (fl_is_valid and front_left < TURN_THRESHOLD)
-
-            if approaching_corner:
-                self.in_corner_turn = True
-
-            # Exit corner mode when it’s open in front again and left wall distance looks reasonable
-            # (prevents endless spinning)
-            if self.in_corner_turn:
-                # Turn RIGHT in place-ish (for left-wall following, this helps you round the corner)
-                turn = -1.0  # strong turn
-                # Reduce forward speed while turning to avoid wedging
-                base = 0.2 * MAX_SPEED
-
-                # Condition to exit: front is no longer near, and left distance is back in a sane range
-                if (front_is_valid and front > 2 * TURN_THRESHOLD) and (left > 1e-6 and left < 1.5):
-                    self.in_corner_turn = False
+            # Exit when front opens up again (hysteresis)
+            if front_ok and front > corner_exit_threshold:
+                self.in_corner_turn = False
+        else:
+            # Standard bang-bang wall following (LEFT wall)
+            if error < 0:
+                # too close to left wall -> steer away (turn right)
+                turn = -bang_turn
             else:
-                # --- STANDARD BANG-BANG WALL FOLLOW ---
-                if error < 0:
-                    # too close to left wall → steer away (turn right)
-                    turn = -bang_turn
-                else:
-                    # too far from left wall → steer toward it (turn left)
-                    turn = +bang_turn
+                # too far from left wall -> steer toward (turn left)
+                turn = +bang_turn
 
+    # Convert (base, turn) -> wheel speeds
+    left_speed = base + turn
+    right_speed = base - turn
 
-        # Convert (base, turn) -> wheel speeds
-        left_speed  = base + turn
-        right_speed = base - turn
+    # Clamp to motor limits
+    left_speed = max(-MAX_SPEED, min(MAX_SPEED, left_speed))
+    right_speed = max(-MAX_SPEED, min(MAX_SPEED, right_speed))
 
-        # Clamp to motor limits
-        left_speed = max(-MAX_SPEED, min(MAX_SPEED, left_speed))
-        right_speed = max(-MAX_SPEED, min(MAX_SPEED, right_speed))
+    control_dict["left_motor"] = left_speed
+    control_dict["right_motor"] = right_speed
 
-        control_dict["left_motor"] = left_speed
-        control_dict["right_motor"] = right_speed
-
-
-        return control_dict
+    return control_dict
