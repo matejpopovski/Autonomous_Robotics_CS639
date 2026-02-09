@@ -105,57 +105,59 @@ class StudentController:
     #     closest = self._safe_min(lidar, ignore_zeros=True)
     #     return front, right, left, closest, front_left
 
-    def _idx(self, deg, n):
-        return int((deg % 360) * n / 360)
-
-    def _dir_dists(self, lidar):
-        n = len(lidar)
-        front = lidar[self._idx(0, n)]
-        right = lidar[self._idx(90, n)]
-        left  = lidar[self._idx(270, n)]
-        return front, right, left
-
+    def _idx_robot(self, deg, n):
+        """
+        Convert robot-frame degrees to lidar index.
+        Robot frame:
+            0 = front
+            90 = right
+            180 = back
+            270 = left
+        """
+        base = int((deg % 360) * n / 360)
+        return (n//2 - base + n) % n
 
 
     def step(self, sensors):
-        # Expect only lidar in this HW wrapper
-        lidar_readings = sensors["lidar"]
-        lidar = np.array(lidar_readings, dtype=float)
-
-        # Handle inf -> 0 (common in your setup)
-        filtered = np.copy(lidar)
-        filtered[np.isinf(filtered)] = 0.0
-
-        # Directional distances
-        n = len(filtered)
+        lidar = np.array(sensors["lidar"], dtype=float)
+        lidar[np.isinf(lidar)] = 0.0
+        n = len(lidar)
 
         def idx(deg):
-            return int((deg % 360) * n / 360)
+            return self._idx_robot(deg, n)
 
-        front = filtered[idx(0)]
-        right = filtered[idx(90)]
-        left  = filtered[idx(270)]
+        def arc_min(center_deg, half_width):
+            vals = []
+            for d in range(center_deg - half_width, center_deg + half_width + 1):
+                v = lidar[idx(d)]
+                if v > 1e-6:
+                    vals.append(v)
+            return min(vals) if vals else 10.0   # treat empty as "far"
 
-        # Follow RIGHT wall at DESIRED_DISTANCE
-        error = DESIRED_DISTANCE - right
+        # --- Direction sensing ---
+        front_min = arc_min(0, 15)
+        right_min = arc_min(90, 10)
 
-        control_dict = {"left_motor": 0.0, "right_motor": 0.0}
+        error = DESIRED_DISTANCE - right_min
 
-        # Corner / collision override: if wall in front, turn left
-        if front > 1e-6 and front < TURN_THRESHOLD:
-            control_dict["left_motor"]  = 0.25 * MAX_SPEED
-            control_dict["right_motor"] = 0.85 * MAX_SPEED
-            return control_dict
+        # --- Collision avoidance ---
+        avoid_thresh = max(TURN_THRESHOLD, 0.45)
 
-        # Steering command u
+        if front_min < avoid_thresh:
+            return {
+                "left_motor": 0.10 * MAX_SPEED,
+                "right_motor": 0.80 * MAX_SPEED
+            }
+
+        # --- Controller ---
         u = 0.0
 
         if self.control_law == "bang-bang":
-            deadband = 0.02
+            deadband = 0.03
             if error > deadband:
-                u = +0.35 * MAX_SPEED
+                u = +0.45 * MAX_SPEED
             elif error < -deadband:
-                u = -0.35 * MAX_SPEED
+                u = -0.45 * MAX_SPEED
             else:
                 u = 0.0
 
@@ -163,28 +165,27 @@ class StudentController:
             u = KP * error * MAX_SPEED
 
         elif self.control_law == "PID":
-            # Safe init in case you didn't add these in __init__
             if not hasattr(self, "integral_error"):
                 self.integral_error = 0.0
             if not hasattr(self, "prev_error"):
                 self.prev_error = 0.0
 
             dt = TIME_STEP / 1000.0
+
             self.integral_error += error * dt
             self.integral_error = float(np.clip(self.integral_error, -1.0, 1.0))
+
             derr = (error - self.prev_error) / dt
             self.prev_error = error
 
             u = (KP * error + KI * self.integral_error + KD * derr) * MAX_SPEED
 
-        # Mix into wheel speeds
-        base = 0.6 * MAX_SPEED
-        left_speed  = base - u
-        right_speed = base + u
+        # --- Speed scheduling ---
+        base_fast = 0.55 * MAX_SPEED
+        base_slow = 0.25 * MAX_SPEED
+        base = base_slow if front_min < 0.8 else base_fast
 
-        left_speed  = float(np.clip(left_speed,  -MAX_SPEED, MAX_SPEED))
-        right_speed = float(np.clip(right_speed, -MAX_SPEED, MAX_SPEED))
+        left = float(np.clip(base - u, -MAX_SPEED, MAX_SPEED))
+        right = float(np.clip(base + u, -MAX_SPEED, MAX_SPEED))
 
-        control_dict["left_motor"] = left_speed
-        control_dict["right_motor"] = right_speed
-        return control_dict
+        return {"left_motor": left, "right_motor": right}
