@@ -41,7 +41,7 @@ class TurtleBotController:
         self._control_noise_pct = 0.0
         self._heading_noise = 0 * (math.pi / 180)
 
-        self.student_controller = StudentController(control_law="P")
+        self.student_controller = StudentController(control_law="PID")
 
     def provide_lidar(self):
         lidar_image = self.lidar.getRangeImage()

@@ -27,7 +27,7 @@ while supervisor.step(timestep) != -1:
         points.append([position[0], position[1]])
 
     t += 1
-    if t >= 1000:
+    if t >= 6000:
         break
 
 # End of controller
